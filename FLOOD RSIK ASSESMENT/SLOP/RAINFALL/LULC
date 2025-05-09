@@ -1,0 +1,85 @@
+Map.centerObject(aoi, 11);
+
+// Step 2: Elevation/Slope from SRTM
+var srtm = ee.Image('USGS/SRTMGL1_003').clip(aoi);
+var slope = ee.Terrain.slope(srtm);
+Map.addLayer(slope, {min: 0, max: 60, palette: ['white', 'red']}, 'Slope');
+
+// Step 3: Land Use / Land Cover (LULC)
+var lulc = ee.Image('ESA/WorldCover/v100/2020').clip(aoi);
+Map.addLayer(lulc, {}, 'Land Use');
+
+// Step 4: Rainfall (CHIRPS)
+var rainfall = ee.ImageCollection('UCSB-CHG/CHIRPS/DAILY')
+  .filterDate('2023-07-01', '2023-07-31') // Customize your date
+  .filterBounds(aoi)
+  .sum()
+  .clip(aoi);
+Map.addLayer(rainfall, {min: 0, max: 300, palette: ['white', 'blue']}, 'Rainfall');
+
+// Step 5: Distance to Water Bodies
+var water = ee.Image('JRC/GSW1_3/GlobalSurfaceWater').select('occurrence').clip(aoi);
+var waterMask = water.gt(50); // Areas with water occurrence > 50%
+var distance = waterMask.fastDistanceTransform(1000).sqrt().clip(aoi);
+Map.addLayer(distance, {min: 0, max: 500, palette: ['blue', 'white']}, 'Distance to Water');
+
+// Step 6: Normalize Layers (0–1 scale)
+var norm_slope = slope.divide(60);
+var norm_rain = rainfall.divide(300);
+var norm_dist = distance.divide(500);
+
+// Step 7: Weighted Overlay for Risk Index
+// Example weights: slope (0.3), rainfall (0.4), distance to water (0.3)
+var risk = norm_slope.multiply(0.3)
+  .add(norm_rain.multiply(0.4))
+  .add(norm_dist.multiply(0.3));
+
+Map.addLayer(risk, {min: 0, max: 1, palette: ['green', 'yellow', 'red']}, 'Flood Risk Index');
+
+// Optional: Add legend and export
+
+var title = ui.Label('🛰️ Flood Risk Assessment Model - GEE', {
+  fontWeight: 'bold',
+  fontSize: '18px',
+  margin: '10px 5px'
+});
+Map.add(title);
+
+// -----------------------------------
+// ADD LEGEND
+// -----------------------------------
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px'
+  }
+});
+
+// Legend title
+var legendTitle = ui.Label({
+  value: 'Flood Risk Level',
+  style: {
+    fontWeight: 'bold',
+    fontSize: '14px',
+    margin: '0 0 6px 0',
+    padding: '0'
+  }
+});
+legend.add(legendTitle);
+
+// Legend colors and labels
+var palette = ['green', 'yellow', 'orange', 'red'];
+var labels = ['Low', 'Moderate', 'High', 'Very High'];
+
+for (var i = 0; i < 4; i++) {
+  var colorBox = ui.Label('', {
+    backgroundColor: palette[i],
+    padding: '8px',
+    margin: '0 0 4px 0'
+  });
+  var description = ui.Label(labels[i], {margin: '0 0 4px 6px'});
+  var row = ui.Panel([colorBox, description], ui.Panel.Layout.Flow('horizontal'));
+  legend.add(row);
+}
+
+Map.add(legend);
