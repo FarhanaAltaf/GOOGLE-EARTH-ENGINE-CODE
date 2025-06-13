@@ -1,0 +1,121 @@
+var geometry = ee.FeatureCollection("projects/ee-farhana786altaf/assets/KP_5");
+// -------------------- CENTER MAP --------------------
+Map.centerObject(geometry);
+
+// -------------------- LOAD ASTER IMAGE --------------------
+var aster = ee.ImageCollection("ASTER/AST_L1T_003")
+  .filterBounds(geometry)
+  .filter(ee.Filter.lt('CLOUDCOVER',10))
+  .filter(ee.Filter.calendarRange(6, 9, 'month'))
+  .mean();
+
+Map.addLayer(aster.clip(geometry), {}, 'ASTER Composite', false);
+
+// -------------------- DARK OBJECT SUBTRACTION --------------------
+function dos(img) {
+  var ms = img.select('B0[1-9]', 'B3N');
+  var tir = img.select('B1[0-4]');
+  var dark_object = ms.reduceRegion({
+    reducer: ee.Reducer.min(), 
+    geometry: geometry, 
+    scale: 500
+  });
+
+  var bands = ms.bandNames();
+  var cor = bands.map(function(band_name){
+    var do_val = ee.Number(dark_object.get(band_name));
+    var cor = ms.select([band_name]).subtract(do_val);
+    return cor;
+  });
+
+  return ee.ImageCollection(cor).toBands().addBands(tir);
+}
+
+var aster_cor = dos(aster);
+
+// -------------------- LITHOLOGY INDICES --------------------
+function lithology(img, index){
+  var kli = img.expression('(b4/b5)*(b8/b6)', {
+    'b4': img.select('2_B04'), 'b5': img.select('3_B05'), 'b6': img.select('4_B06'), 'b8': img.select('6_B08')
+  }).rename('kaolinite');
+
+  var ali = img.expression('(b7/b5)*(b7/b8)', {
+    'b5': img.select('3_B05'), 'b7': img.select('5_B07'), 'b8': img.select('6_B08')
+  }).rename('alunite');
+
+  var cli = img.expression('(b6/b8)*(b9/b8)', {
+    'b6': img.select('4_B06'), 'b8': img.select('6_B08'), 'b9': img.select('7_B09')
+  }).rename('calcite');
+
+  var qi = img.expression('(b11 * b11)/(b10 * b12)', {
+    'b10': img.select('B10'), 'b11': img.select('B11'), 'b12': img.select('B12')
+  }).rename('quartz');
+
+  var ci = img.expression('b13/b14', {
+    'b13': img.select('B13'), 'b14': img.select('B14')
+  }).rename('carbonate');
+
+  var mi = img.expression('b12/b13', {
+    'b12': img.select('B12'), 'b13': img.select('B13')
+  }).rename('mafic');
+
+  return ee.Image(ee.Algorithms.If(index === 'kaolinite', kli, 
+    ee.Algorithms.If(index === 'alunite', ali, 
+    ee.Algorithms.If(index === 'calcite', cli, 
+    ee.Algorithms.If(index === 'quartz', qi, 
+    ee.Algorithms.If(index === 'carbonate', ci, 
+    ee.Algorithms.If(index === 'mafic', mi)))))));
+}
+
+// -------------------- CALCULATE INDICES --------------------
+var kaolinite = lithology(aster_cor, 'kaolinite');
+var alunite = lithology(aster_cor, 'alunite');
+var calcite = lithology(aster_cor, 'calcite');
+var quartz = lithology(aster_cor, 'quartz');
+var carbonate = lithology(aster_cor, 'carbonate');
+var mafic = lithology(aster_cor, 'mafic');
+
+// -------------------- ADD TO MAP --------------------
+Map.addLayer(kaolinite.clip(geometry), {min:0, max:5, palette:['white','orange','brown']}, 'Kaolinite');
+Map.addLayer(alunite.clip(geometry), {min:0, max:5, palette:['white','yellow','red']}, 'Alunite');
+Map.addLayer(calcite.clip(geometry), {min:0, max:5, palette:['white','green','darkgreen']}, 'Calcite');
+Map.addLayer(quartz.clip(geometry), {min:0, max:5, palette:['white','blue','darkblue']}, 'Quartz');
+Map.addLayer(carbonate.clip(geometry), {min:0, max:5, palette:['white','gray','black']}, 'Carbonate');
+Map.addLayer(mafic.clip(geometry), {min:0, max:5, palette:['white','purple','darkpurple']}, 'Mafic');
+
+var combined = kaolinite.addBands(calcite).addBands(quartz).clip(geometry);
+Map.addLayer(combined, {}, 'Kaolinite + Calcite + Quartz', false);
+
+// -------------------- ADD TITLE --------------------
+var title = ui.Label('ASTER-Derived Lithology Indices (Kaolinite, Alunite, etc.)', {
+  fontWeight: 'bold',
+  fontSize: '20px',
+  margin: '10px 5px'
+});
+Map.add(title);
+
+// -------------------- ADD LEGEND FOR ONE INDEX --------------------
+var legend = ui.Panel({style: {position: 'bottom-left', padding: '8px 15px'}});
+legend.add(ui.Label('Kaolinite Index Legend'));
+
+[
+  ['white', 'Low'],
+  ['orange', 'Medium'],
+  ['brown', 'High']
+].forEach(function(item) {
+  var colorBox = ui.Label('', {backgroundColor: item[0], padding: '8px', margin: '0 4px 4px 0'});
+  var desc = ui.Label(item[1], {margin: '0 0 4px 6px'});
+  legend.add(ui.Panel([colorBox, desc], ui.Panel.Layout.Flow('horizontal')));
+});
+Map.add(legend);
+
+// -------------------- EXPORT EXAMPLE --------------------
+Export.image.toDrive({
+  image: kaolinite.clip(geometry),
+  description: 'Kaolinite_Index_ASTER',
+  folder: 'GEE_Exports',
+  fileNamePrefix: 'Kaolinite_Export',
+  region: geometry,
+  scale: 30,
+  maxPixels: 1e13
+});
