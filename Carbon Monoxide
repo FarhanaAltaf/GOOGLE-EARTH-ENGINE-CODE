@@ -1,0 +1,74 @@
+var ROI = ee.FeatureCollection("projects/ee-farhana786altaf/assets/DistrictBoundary");
+// Monitoring Carbon Monoxide Air Pollution Using Sentinel-5P in Google Earth Engine
+/*
+This analyzes Carbon Monoxide (CO) pollution over a study region using Sentinel-5P datasets
+*/
+
+// 1. Define the Study Area
+
+// Center the map and add the ROI
+Map.centerObject(ROI, 5);
+Map.addLayer(ROI, {}, 'ROI');
+
+// 2. Load and Process Carbon Monoxide Data
+
+// Define the time period for analysis
+var startYear = '2019';
+var endYear = '2025';
+
+// Load Sentinel-5P Carbon Monoxide (CO) dataset
+var coCollection = ee.ImageCollection("COPERNICUS/S5P/NRTI/L3_CO")
+  .select('CO_column_number_density')  // Select the CO band
+  .filterDate(startYear, endYear)
+  .filterBounds(ROI);
+
+// Generate a list of years
+var yearsList = ee.List.sequence(ee.Number.parse(startYear), ee.Number.parse(endYear).subtract(1));
+
+print(yearsList);
+
+// Compute the total annual CO levels
+var annualCO = ee.ImageCollection(yearsList.map(function(year) {
+  var yearlyImage = coCollection
+    .filter(ee.Filter.calendarRange(year, year, 'year')) // Filter CO data for a specific year
+    .sum();  // Compute total annual CO (sum instead of mean)
+  
+  // Create a timestamp for the year
+  var timestamp = ee.Date.fromYMD(year, 1, 1); // Use January 1st as a reference for the year
+  return yearlyImage.set('system:time_start', timestamp.millis());
+}));
+
+// Display the total annual CO concentration layer
+Map.addLayer(annualCO.mean().clip(ROI), {min: 0, max: 0.5, palette: ['blue', 'yellow', 'red']}, 'Total Annual CO Concentration');
+
+// 3. Generate CO Time Series Chart
+
+// Create a time-series chart of annual CO levels over the region
+print(
+  ui.Chart.image.series({
+    imageCollection: annualCO,
+    region: ROI,
+    reducer: ee.Reducer.mean(),
+    scale: 7000,
+    xProperty: 'system:time_start'
+  }).setOptions({
+    title: 'Annual CO Levels (2019-2024)',
+    vAxis: {title: 'Total CO Concentration (mol/m²)'},
+    hAxis: {title: 'Year'},
+    series: {0: {color: 'red'}},
+    pointSize: 4
+  })
+);
+
+// 4. Export Carbon Monoxide Images
+
+// Export the total annual CO concentration image
+Export.image.toDrive({
+  image: annualCO.mean().clip(ROI),
+  description: 'CO_Total_Annual_2019_2024',
+  scale: 1000,
+  region: ROI,
+  maxPixels: 1e13,
+  folder: 'Air_Quality_Analysis',
+  crs: 'EPSG:4326'
+});
