@@ -1,0 +1,77 @@
+// -------------------- USER INPUTS --------------------
+var startDate = '2010-01-01';
+var endDate = '2010-12-31';
+var aoi = ee.Geometry.Rectangle([70.8, 29.5, 71.0, 29.7]);  // Define your AOI
+
+// -------------------- CLOUD MASK FUNCTION --------------------
+function maskL5sr(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitMask = 1 << 3;
+  var cloudsBitMask = 1 << 5;
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+               .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+// -------------------- IMAGE COLLECTION --------------------
+var collection = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .map(maskL5sr)
+  .map(function(image) {
+    var green = image.select('SR_B2').multiply(0.0000275).add(-0.2);
+    var nir   = image.select('SR_B4').multiply(0.0000275).add(-0.2);
+    var swir1 = image.select('SR_B5').multiply(0.0000275).add(-0.2);
+    var swir2 = image.select('SR_B7').multiply(0.0000275).add(-0.2);
+    
+    var tempK = image.select('ST_B6').multiply(0.00341802).add(149.0);
+    var tempC = tempK.subtract(273.15).rename('TEMP_C');  // Celsius
+
+    var awei = green.multiply(4).subtract(swir1.multiply(4))
+                    .subtract(nir.multiply(0.25)).subtract(swir2.multiply(2.75))
+                    .rename('AWEIsh');
+
+    return image.addBands([awei, tempC]);
+  });
+
+// -------------------- REDUCE TO SINGLE IMAGE --------------------
+var image = collection.median().clip(aoi);
+var temp = image.select('TEMP_C'); // LST in Celsius
+var awei = image.select('AWEIsh');
+
+// -------------------- SAMPLE PIXELS --------------------
+var sample = temp.addBands(awei).sample({
+  region: aoi,
+  scale: 30,
+  numPixels: 3000,
+  geometries: true
+});
+
+// -------------------- PRINT PREVIEW --------------------
+print('📋 Sample Table Preview (First 10 Rows):', sample.limit(10));
+
+// -------------------- SCATTER CHART --------------------
+var chart = ui.Chart.feature.byFeature(sample, 'TEMP_C', ['AWEIsh'])
+  .setChartType('ScatterChart')
+  .setOptions({
+    title: 'LST (°C) vs AWEIsh (2010)',
+    hAxis: {title: 'LST (°Celsius)'},
+    vAxis: {title: 'AWEIsh'},
+    pointSize: 2,
+    colors: ['#1f77b4']
+  });
+print(chart);
+
+// -------------------- PEARSON CORRELATION --------------------
+var corr = sample.reduceColumns({
+  reducer: ee.Reducer.pearsonsCorrelation(),
+  selectors: ['TEMP_C', 'AWEIsh']
+});
+print('📌 Pearson Correlation (LST °C vs AWEIsh):', corr);
+
+// -------------------- EXPORT TO CSV --------------------
+Export.table.toDrive({
+  collection: sample,
+  description: 'LST_Celsius_AWEIsh_Correlation_2010',
+  fileFormat: 'CSV'
+});
