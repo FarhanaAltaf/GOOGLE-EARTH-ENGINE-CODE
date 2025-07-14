@@ -1,0 +1,94 @@
+@FARHANA@ALTAF
+// -------------------- USER INPUTS --------------------
+var startDate = '1990-01-01';
+var endDate = '1990-12-31';
+var aoi = /* your AOI geometry here */;
+
+// -------------------- CLOUD MASK FUNCTION --------------------
+function maskL5sr(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitMask = 1 << 3;
+  var cloudsBitMask = 1 << 5;
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+               .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+// -------------------- IMAGE COLLECTION --------------------
+var collection = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .map(maskL5sr)
+  .map(function(image) {
+    var red = image.select('SR_B3').multiply(0.0000275).add(-0.2);
+    var nir = image.select('SR_B4').multiply(0.0000275).add(-0.2);
+    var tempK = image.select('ST_B6').multiply(0.00341802).add(149.0);
+    var tempC = tempK.subtract(273.15).rename('TEMP_C');
+    
+    var ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
+    return image.addBands([ndvi, tempC]);
+  });
+
+// -------------------- REDUCE TO MEDIAN IMAGE --------------------
+var image = collection.median().clip(aoi);
+var ndvi = image.select('NDVI');
+var tempC = image.select('TEMP_C');
+
+// -------------------- CALCULATE TVDI --------------------
+var points = ndvi.addBands(tempC).sample({
+  region: aoi,
+  scale: 30,
+  numPixels: 3000,
+  geometries: false
+});
+
+var regression = points.reduceColumns({
+  reducer: ee.Reducer.linearFit(),
+  selectors: ['NDVI', 'TEMP_C']
+});
+
+var slopeMax = ee.Number(regression.get('scale'));
+var interceptMax = ee.Number(regression.get('offset'));
+var slopeMin = slopeMax.multiply(0.6);
+var interceptMin = interceptMax.subtract(2);
+
+var ts_min = ndvi.multiply(slopeMin).add(interceptMin);
+var ts_max = ndvi.multiply(slopeMax).add(interceptMax);
+var tvdi = tempC.subtract(ts_min).divide(ts_max.subtract(ts_min)).rename('TVDI').clamp(0, 1);
+
+// -------------------- SAMPLE PIXELS --------------------
+var sample = tempC.addBands(tvdi).sample({
+  region: aoi,
+  scale: 30,
+  numPixels: 3000,
+  geometries: true
+});
+
+// -------------------- PRINT PREVIEW --------------------
+print('📋 Sample Table Preview (First 10 Rows):', sample.limit(10));
+
+// -------------------- SCATTER CHART --------------------
+var chart = ui.Chart.feature.byFeature(sample, 'TEMP_C', ['TVDI'])
+  .setChartType('ScatterChart')
+  .setOptions({
+    title: 'LST (°C) vs TVDI (1990)',
+    hAxis: {title: 'LST (°C)'},
+    vAxis: {title: 'TVDI'},
+    pointSize: 2,
+    colors: ['#e377c2']
+  });
+print(chart);
+
+// -------------------- PEARSON CORRELATION --------------------
+var corr = sample.reduceColumns({
+  reducer: ee.Reducer.pearsonsCorrelation(),
+  selectors: ['TEMP_C', 'TVDI']
+});
+print('📌 Pearson Correlation (LST °C vs TVDI) - 1990:', corr);
+
+// -------------------- EXPORT TO CSV --------------------
+Export.table.toDrive({
+  collection: sample,
+  description: 'LST_Celsius_TVDI_Correlation_1990',
+  fileFormat: 'CSV'
+});
