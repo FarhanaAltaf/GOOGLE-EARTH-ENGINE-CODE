@@ -1,0 +1,72 @@
+// -------------------- USER INPUTS --------------------
+var startDate = '2000-01-01';
+var endDate = '2000-12-31';
+var aoi = /* Your Area of Interest geometry here */;
+
+// -------------------- CLOUD MASK FUNCTION --------------------
+function maskL5sr(image) {
+  var qa = image.select('QA_PIXEL');
+  var cloudShadowBitMask = 1 << 3;
+  var cloudsBitMask = 1 << 5;
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+               .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+// -------------------- IMAGE COLLECTION --------------------
+var collection = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+  .filterBounds(aoi)
+  .filterDate(startDate, endDate)
+  .map(maskL5sr)
+  .map(function(image) {
+    var nir = image.select('SR_B4').multiply(0.0000275).add(-0.2);
+    var swir = image.select('SR_B5').multiply(0.0000275).add(-0.2);
+    var tempK = image.select('ST_B6').multiply(0.00341802).add(149.0);
+    var tempC = tempK.subtract(273.15).rename('TEMP_C');  // Celsius
+
+    var ndmi = nir.subtract(swir).divide(nir.add(swir)).rename('NDMI');
+
+    return image.addBands([ndmi, tempC]);
+  });
+
+// -------------------- REDUCE TO MEDIAN IMAGE --------------------
+var image = collection.median().clip(aoi);
+var ndmi = image.select('NDMI');
+var tempC = image.select('TEMP_C');
+
+// -------------------- SAMPLE PIXELS --------------------
+var sample = tempC.addBands(ndmi).sample({
+  region: aoi,
+  scale: 30,
+  numPixels: 3000,
+  geometries: true
+});
+
+// -------------------- PRINT PREVIEW --------------------
+print('📋 Sample Table Preview (First 10 Rows):', sample.limit(10));
+
+// -------------------- SCATTER CHART --------------------
+var chart = ui.Chart.feature.byFeature(sample, 'TEMP_C', ['NDMI'])
+  .setChartType('ScatterChart')
+  .setOptions({
+    title: 'LST (°C) vs NDMI (2000)',
+    hAxis: {title: 'LST (°Celsius)'},
+    vAxis: {title: 'NDMI'},
+    pointSize: 2,
+    colors: ['#2ca02c']
+  });
+print(chart);
+
+// -------------------- PEARSON CORRELATION --------------------
+var corr = sample.reduceColumns({
+  reducer: ee.Reducer.pearsonsCorrelation(),
+  selectors: ['TEMP_C', 'NDMI']
+});
+print('📌 Pearson Correlation (LST °C vs NDMI) - 2000:', corr);
+
+// -------------------- EXPORT TO CSV --------------------
+Export.table.toDrive({
+  collection: sample,
+  description: 'LST_Celsius_NDMI_Correlation_2000',
+  fileFormat: 'CSV'
+});
